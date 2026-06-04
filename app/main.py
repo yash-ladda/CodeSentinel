@@ -11,11 +11,17 @@ from fastapi import (
 )
 from dotenv import load_dotenv
 
+from app.db.models import create_tables
+
 load_dotenv()
 
 GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET")
 
 app = FastAPI()
+
+# Create DB tables on startup — safe to call every time,
+# SQLAlchemy skips tables that already exist
+create_tables()
 
 
 def verify_webhook_signature(
@@ -23,7 +29,8 @@ def verify_webhook_signature(
     signature_header: str
 ) -> bool:
     """
-    Verify that webhook request actually came from GitHub.
+    Verify that the webhook request actually came from GitHub.
+    Uses HMAC-SHA256 with our webhook secret.
     """
     if (
         not signature_header
@@ -39,57 +46,89 @@ def verify_webhook_signature(
         digestmod=hashlib.sha256
     ).hexdigest()
 
+    # compare_digest prevents timing attacks
     return hmac.compare_digest(
         computed_signature,
         expected_signature
     )
 
 
-async def process_pr(repo_full_name: str, pr_number: int):
-    """Background task: fetch PR data, parse diffs, print structured output."""
+async def process_pr(
+    repo_full_name: str,
+    pr_number: int,
+    commit_sha: str
+):
+    """
+    Background task: full review pipeline with DB tracking.
+
+    Current shape:
+      idempotency check → create DB record → fetch PR data
+      → parse diffs → [LLM review — Day 6+] → save results → mark complete
+
+    Status transitions: queued → processing → completed | failed
+    """
     from app.github.client import get_pr_context
-    from app.review.parser import parse_pr_files, build_file_context
+    from app.review.parser import parse_pr_files
+    from app.db.storage import (
+        is_already_reviewed,
+        create_review,
+        update_review_status,
+        get_review_summary,
+    )
+
+    # ── Idempotency check ──────────────────────────────────────────────
+    # If we already completed a review for this exact commit SHA, skip.
+    # Prevents duplicate comments when GitHub redelivers a webhook.
+    if is_already_reviewed(commit_sha, repo_full_name):
+        print(
+            f"  Skipping PR #{pr_number} — "
+            f"commit {commit_sha[:8]} already reviewed"
+        )
+        return
+
+    # ── Create review record ───────────────────────────────────────────
+    review_id = create_review(
+        repo=repo_full_name,
+        pr_number=pr_number,
+        commit_sha=commit_sha,
+        pr_title="",   # filled after fetch below
+        author="",
+    )
+    update_review_status(review_id, "processing")
 
     try:
-        print(f"\nProcessing PR #{pr_number} in {repo_full_name}...")
+        # ── Fetch PR data from GitHub ──────────────────────────────────
         context = get_pr_context(repo_full_name, pr_number)
         parsed_files = parse_pr_files(context["files"])
 
-        print(f"\n{'='*50}")
-        print(f"PARSED {len(parsed_files)} FILE(S)")
+        print(f"\n  PR:    #{context['pr_number']} — {context['title']}")
+        print(f"  Author: {context['author']}")
+        print(f"  Files to review: {len(parsed_files)}")
 
-        for i, parsed_file in enumerate(parsed_files):
-            raw_file = context["files"][i]
-            reviewable_lines = parsed_file.get_reviewable_line_numbers()
-            added_lines = parsed_file.get_added_line_numbers()
+        # ── [Day 6+] LLM review goes here ─────────────────────────────
+        print(f"\n  [Day 6+] LLM review slots in here")
 
-            print(f"\n--- {parsed_file.filename} ---")
-            print(f"  Status:           {parsed_file.status}")
-            print(f"  Total diff lines: {len(parsed_file.lines)}")
-            print(f"  Added lines:      {added_lines}")
-            print(f"  Reviewable lines: {reviewable_lines}")
+        # ── Mark complete ──────────────────────────────────────────────
+        update_review_status(review_id, "completed")
 
-            # Show the built context (first 500 chars only for terminal readability)
-            file_context = build_file_context(parsed_file, raw_file["full_content"])
-            print(f"\n  Context preview (first 500 chars):")
-            print(f"  {file_context[:500]}")
-
-        print(f"\n{'='*50}\n")
+        summary = get_review_summary(review_id)
+        print(f"\n  Review #{review_id} complete: {summary}")
 
     except Exception as e:
         import traceback
-        print(f"ERROR processing PR #{pr_number}: {e}")
+        update_review_status(
+            review_id,
+            "failed",
+            error_message=str(e)
+        )
+        print(f"  ERROR in review #{review_id}: {e}")
         traceback.print_exc()
 
 
 @app.get("/")
 async def root():
-    """
-    Health check endpoint.
-    """
-    return {
-        "status": "pr-review-agent is running"
-    }
+    """Health check endpoint."""
+    return {"status": "pr-review-agent is running"}
 
 
 @app.post("/webhook")
@@ -98,7 +137,10 @@ async def handle_webhook(
     background_tasks: BackgroundTasks
 ):
     """
-    Receive GitHub webhook events.
+    Receive and route GitHub webhook events.
+
+    Must respond with 200 within 10 seconds — heavy work
+    runs in a background task after we return.
     """
     body = await request.body()
 
@@ -107,89 +149,55 @@ async def handle_webhook(
         ""
     )
 
-    # Verify webhook security
-    if not verify_webhook_signature(
-        body,
-        signature
-    ):
-        print(
-            "ERROR: Invalid webhook signature"
-        )
-
+    # ── Security: verify the request is from GitHub ────────────────────
+    if not verify_webhook_signature(body, signature):
+        print("ERROR: Invalid webhook signature — request rejected")
         raise HTTPException(
             status_code=401,
             detail="Invalid signature"
         )
 
-    # Parse JSON payload
+    # ── Parse payload ──────────────────────────────────────────────────
     try:
         payload = json.loads(body)
-
     except json.JSONDecodeError:
         raise HTTPException(
             status_code=400,
             detail="Invalid JSON"
         )
 
-    event_type = request.headers.get(
-        "X-GitHub-Event",
-        "unknown"
-    )
+    event_type = request.headers.get("X-GitHub-Event", "unknown")
+    action = payload.get("action", "unknown")
 
-    action = payload.get(
-        "action",
-        "unknown"
-    )
+    print(f"\nEVENT: {event_type} / {action}")
 
-    print(
-        f"\nEVENT: "
-        f"{event_type} / {action}"
-    )
-
-    # Handle PR events
+    # ── Route events ───────────────────────────────────────────────────
     if (
         event_type == "pull_request"
-        and action in [
-            "opened",
-            "synchronize",
-            "reopened"
-        ]
+        and action in ["opened", "synchronize", "reopened"]
     ):
-        repo_name = payload[
-            "repository"
-        ]["full_name"]
-
+        repo_name = payload["repository"]["full_name"]
         pr_number = payload["number"]
+        commit_sha = payload["pull_request"]["head"]["sha"]
 
         print(
-            f"Starting background review "
-            f"for PR #{pr_number}"
+            f"  Queuing review for PR #{pr_number} "
+            f"({commit_sha[:8]}...) in {repo_name}"
         )
 
-        # Run PR processing in background
         background_tasks.add_task(
             process_pr,
             repo_name,
-            pr_number
+            pr_number,
+            commit_sha
         )
 
-        return {
-            "status": "processing"
-        }
+        return {"status": "processing"}
 
-    # GitHub webhook test event
     elif event_type == "ping":
-        print(
-            f"Ping: "
-            f"{payload.get('zen', '')}"
-        )
+        print(f"  Ping received: {payload.get('zen', '')}")
 
     else:
-        print(
-            f"Unhandled event: "
-            f"{event_type}"
-        )
+        print(f"  Unhandled event: {event_type}")
 
-    return {
-        "status": "received"
-    }
+    return {"status": "received"}
