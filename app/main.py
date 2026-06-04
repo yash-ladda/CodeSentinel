@@ -45,60 +45,41 @@ def verify_webhook_signature(
     )
 
 
-async def process_pr(
-    repo_full_name: str,
-    pr_number: int
-):
-    """
-    Background task:
-    Fetch PR data and print it.
-
-    LLM review logic will be added later.
-    """
+async def process_pr(repo_full_name: str, pr_number: int):
+    """Background task: fetch PR data, parse diffs, print structured output."""
     from app.github.client import get_pr_context
+    from app.review.parser import parse_pr_files, build_file_context
 
     try:
-        print(
-            f"\nProcessing PR "
-            f"#{pr_number} in {repo_full_name}..."
-        )
+        print(f"\nProcessing PR #{pr_number} in {repo_full_name}...")
+        context = get_pr_context(repo_full_name, pr_number)
+        parsed_files = parse_pr_files(context["files"])
 
-        context = get_pr_context(
-            repo_full_name,
-            pr_number
-        )
+        print(f"\n{'='*50}")
+        print(f"PARSED {len(parsed_files)} FILE(S)")
 
-        print(f"\n{'=' * 50}")
-        print("PR CONTEXT FETCHED SUCCESSFULLY")
-        print(
-            f"PR #{context['pr_number']}: "
-            f"{context['title']}"
-        )
-        print(f"Author: {context['author']}")
-        print(
-            f"Files to review: "
-            f"{len(context['files'])}"
-        )
+        for i, parsed_file in enumerate(parsed_files):
+            raw_file = context["files"][i]
+            reviewable_lines = parsed_file.get_reviewable_line_numbers()
+            added_lines = parsed_file.get_added_line_numbers()
 
-        for f in context["files"]:
-            content_length = len(
-                f["full_content"]
-            )
+            print(f"\n--- {parsed_file.filename} ---")
+            print(f"  Status:           {parsed_file.status}")
+            print(f"  Total diff lines: {len(parsed_file.lines)}")
+            print(f"  Added lines:      {added_lines}")
+            print(f"  Reviewable lines: {reviewable_lines}")
 
-            print(
-                f"  - {f['filename']} "
-                f"| {f['additions']}+ "
-                f"{f['deletions']}- "
-                f"| {content_length} chars"
-            )
+            # Show the built context (first 500 chars only for terminal readability)
+            file_context = build_file_context(parsed_file, raw_file["full_content"])
+            print(f"\n  Context preview (first 500 chars):")
+            print(f"  {file_context[:500]}")
 
-        print(f"{'=' * 50}\n")
+        print(f"\n{'='*50}\n")
 
     except Exception as e:
-        print(
-            f"ERROR processing "
-            f"PR #{pr_number}: {e}"
-        )
+        import traceback
+        print(f"ERROR processing PR #{pr_number}: {e}")
+        traceback.print_exc()
 
 
 @app.get("/")
