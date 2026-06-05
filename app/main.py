@@ -58,46 +58,31 @@ async def process_pr(
     pr_number: int,
     commit_sha: str
 ):
-    """
-    Background task: full review pipeline with DB tracking.
-
-    Current shape:
-      idempotency check → create DB record → fetch PR data
-      → parse diffs → [LLM review — Day 6+] → save results → mark complete
-
-    Status transitions: queued → processing → completed | failed
-    """
     from app.github.client import get_pr_context
-    from app.review.parser import parse_pr_files
+    from app.review.parser import parse_pr_files, build_file_context
+    from app.review.reviewer import review_file
     from app.db.storage import (
         is_already_reviewed,
         create_review,
         update_review_status,
+        save_comments_bulk,
         get_review_summary,
     )
 
-    # ── Idempotency check ──────────────────────────────────────────────
-    # If we already completed a review for this exact commit SHA, skip.
-    # Prevents duplicate comments when GitHub redelivers a webhook.
     if is_already_reviewed(commit_sha, repo_full_name):
-        print(
-            f"  Skipping PR #{pr_number} — "
-            f"commit {commit_sha[:8]} already reviewed"
-        )
+        print(f"  Skipping PR #{pr_number} — commit {commit_sha[:8]} already reviewed")
         return
 
-    # ── Create review record ───────────────────────────────────────────
     review_id = create_review(
         repo=repo_full_name,
         pr_number=pr_number,
         commit_sha=commit_sha,
-        pr_title="",   # filled after fetch below
+        pr_title="",
         author="",
     )
     update_review_status(review_id, "processing")
 
     try:
-        # ── Fetch PR data from GitHub ──────────────────────────────────
         context = get_pr_context(repo_full_name, pr_number)
         parsed_files = parse_pr_files(context["files"])
 
@@ -105,10 +90,32 @@ async def process_pr(
         print(f"  Author: {context['author']}")
         print(f"  Files to review: {len(parsed_files)}")
 
-        # ── [Day 6+] LLM review goes here ─────────────────────────────
-        print(f"\n  [Day 6+] LLM review slots in here")
+        # ── LLM review ─────────────────────────────────────────────────
+        all_comments = []
+        
+        # Build a minimal pr_context dict for the prompt
+        pr_context = {
+            "title": context["title"],
+            "description": context["description"],
+            "author": context["author"],
+        }
+        
+        # Match parsed files back to their full content
+        content_map = {f["filename"]: f.get("full_content", "") for f in context["files"]}
+        
+        for parsed_file in parsed_files:
+            full_content = content_map.get(parsed_file.filename, "")
+            comments = review_file(parsed_file, full_content, pr_context)
+            all_comments.extend(comments)
+        
+        # Save all comments to DB
+        if all_comments:
+            saved = save_comments_bulk(review_id, all_comments)
+            print(f"\n  Saved {saved} comment(s) to database")
+        else:
+            print("\n  No issues found across all files")
+        # ── End LLM review ─────────────────────────────────────────────
 
-        # ── Mark complete ──────────────────────────────────────────────
         update_review_status(review_id, "completed")
 
         summary = get_review_summary(review_id)
@@ -116,11 +123,7 @@ async def process_pr(
 
     except Exception as e:
         import traceback
-        update_review_status(
-            review_id,
-            "failed",
-            error_message=str(e)
-        )
+        update_review_status(review_id, "failed", error_message=str(e))
         print(f"  ERROR in review #{review_id}: {e}")
         traceback.print_exc()
 
