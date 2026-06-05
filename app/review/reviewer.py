@@ -1,10 +1,10 @@
 """
 LLM-powered code reviewer.
 
-Takes a parsed diff + full file content, sends it to Claude,
+Takes a parsed diff + full file content, sends it to Groq,
 and returns structured review comments ready for DB storage.
 
-Flow: build_prompt → call_claude → parse + validate → return comments
+Flow: build_prompt → call_groq → parse + validate → return comments
 """
 import json
 import os
@@ -25,7 +25,7 @@ REVIEW_MODEL = "llama-3.3-70b-versatile"
 VALID_ISSUE_TYPES = {"security", "logic", "quality", "test_gap"}
 VALID_SEVERITIES = {"critical", "major", "minor"}
 
-# System prompt — sets Claude's role and behavior.
+# System prompt — sets Groq's role and behavior.
 # Kept separate from the user prompt so it's easy to tune.
 SYSTEM_PROMPT = """You are a senior software engineer performing a pull request code review.
 Your job is to identify real, actionable issues in the code changes shown to you.
@@ -59,7 +59,7 @@ def build_prompt(parsed_file: ParsedFile, full_content: str, pr_context: dict) -
     - PR context (title, description) for intent understanding
     - The file diff with line numbers
     - The full file content for surrounding context
-    - The explicit list of valid line numbers Claude can reference
+    - The explicit list of valid line numbers Groq can reference
     """
     reviewable_lines = parsed_file.get_reviewable_line_numbers()
     added_lines = parsed_file.get_added_line_numbers()
@@ -92,7 +92,7 @@ def build_prompt(parsed_file: ParsedFile, full_content: str, pr_context: dict) -
 
 def call_groq(prompt: str) -> str:
     """
-    Make the API call to Claude and return the raw response text.
+    Make the API call to Groq and return the raw response text.
     
     Separated from parsing so we can log/debug the raw response
     independently of the parsing logic.
@@ -118,17 +118,17 @@ def call_groq(prompt: str) -> str:
     return completion.choices[0].message.content
 
 
-def parse_claude_response(raw_response: str, filename: str) -> list[dict]:
+def parse_groq_response(raw_response: str, filename: str) -> list[dict]:
     """
-    Parse Claude's raw text response into a list of comment dicts.
+    Parse Groq's raw text response into a list of comment dicts.
     
-    Handles the common ways Claude wraps its output:
+    Handles the common ways Groq wraps its output:
     - Raw JSON array
     - JSON wrapped in ```json ... ``` fences
     - JSON wrapped in ``` ... ``` fences
     
     Returns empty list if parsing fails — we never crash the pipeline
-    because Claude returned something unexpected.
+    because Groq returned something unexpected.
     """
     text = raw_response.strip()
     
@@ -142,15 +142,15 @@ def parse_claude_response(raw_response: str, filename: str) -> list[dict]:
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError as e:
-        print(f"  WARNING: Could not parse Claude response as JSON: {e}")
+        print(f"  WARNING: Could not parse Groq response as JSON: {e}")
         print(f"  Raw response was: {raw_response[:200]}")
         return []
     
     if not isinstance(parsed, list):
-        print(f"  WARNING: Claude returned non-list JSON: {type(parsed)}")
+        print(f"  WARNING: Groq returned non-list JSON: {type(parsed)}")
         return []
     
-    # Ensure file_path is set correctly — Claude sometimes omits it or gets it wrong
+    # Ensure file_path is set correctly — Groq sometimes omits it or gets it wrong
     for item in parsed:
         if "file_path" not in item or not item["file_path"]:
             item["file_path"] = filename
@@ -163,13 +163,13 @@ def validate_comments(
     parsed_file: ParsedFile,
 ) -> list[dict]:
     """
-    Validate and clean each comment from Claude.
+    Validate and clean each comment from Groq.
     
     Checks:
     1. Required fields are present
     2. issue_type and severity are valid enum values
     3. line_number actually exists in the diff (if provided)
-       — falls back to null if Claude hallucinated a line number
+       — falls back to null if Groq hallucinated a line number
     
     This is your safety net. Never trust LLM output directly.
     """
@@ -230,7 +230,7 @@ def review_file(
         
         print(f"  Groq responded ({len(raw_response)} chars)")
         
-        raw_comments = parse_claude_response(raw_response, parsed_file.filename)
+        raw_comments = parse_groq_response(raw_response, parsed_file.filename)
         validated = validate_comments(raw_comments, parsed_file)
         
         print(f"  Found {len(validated)} issue(s) in {parsed_file.filename}")
