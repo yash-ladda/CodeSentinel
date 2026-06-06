@@ -21,18 +21,19 @@ MAX_RETRIES = 3
 INITIAL_RETRY_DELAY = 2
 
 
-def get_github_client() -> Github:
+def get_github_client(installation_id: int) -> Github:
     """
     Create an authenticated GitHub client using our installation token.
     Called fresh for each PR review — tokens expire after 1 hour.
     """
-    token = get_installation_token()
+    token = get_installation_token(installation_id)
     return Github(token)
 
 
 def get_pr_files(
     repo_full_name: str,
-    pr_number: int
+    pr_number: int,
+    installation_id: int
 ) -> list[dict]:
     """
     Fetch all changed files in a PR.
@@ -49,7 +50,7 @@ def get_pr_files(
         "patch": "@@ -1,4 +1,6 @@\n ..."
     }
     """
-    client = get_github_client()
+    client = get_github_client(installation_id)
 
     try:
         repo = client.get_repo(repo_full_name)
@@ -154,8 +155,9 @@ def get_pr_files(
 def get_file_content(
     repo_full_name: str,
     filepath: str,
-    ref: str
-) -> str:
+    ref: str,
+    installation_id: int,
+    ) -> str:
     """
     Fetch the full content of a file
     at a specific commit.
@@ -163,7 +165,7 @@ def get_file_content(
     Uses `ref` to fetch file from
     PR branch instead of main branch.
     """
-    client = get_github_client()
+    client = get_github_client(installation_id)
 
     try:
         repo = client.get_repo(repo_full_name)
@@ -210,7 +212,8 @@ def get_file_content(
 
 def get_pr_context(
     repo_full_name: str,
-    pr_number: int
+    pr_number: int,
+    installation_id: int,
 ) -> dict:
     """
     Main function:
@@ -223,7 +226,7 @@ def get_pr_context(
     - patch
     - full file content
     """
-    client = get_github_client()
+    client = get_github_client(installation_id)
 
     try:
         repo = client.get_repo(
@@ -262,7 +265,8 @@ def get_pr_context(
     # Get changed files
     files = get_pr_files(
         repo_full_name,
-        pr_number
+        pr_number,
+        installation_id
     )
 
     # Cap large PRs
@@ -295,7 +299,8 @@ def get_pr_context(
         content = get_file_content(
             repo_full_name,
             f["filename"],
-            head_sha
+            head_sha,
+            installation_id
         )
 
         enriched_files.append({

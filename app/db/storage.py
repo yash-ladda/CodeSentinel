@@ -161,6 +161,31 @@ def save_comments_bulk(review_id: int, comments: list[dict]) -> int:
     finally:
         session.close()
 
+def get_comments_for_review(review_id: int) -> list[dict]:
+    """
+    Retrieve all comments saved for a given review_id.
+    Returns them as dicts matching the format used by post_review().
+    """
+    session = SessionLocal()
+    try:
+        comments = (
+            session.query(ReviewComment)
+            .filter(ReviewComment.review_id == review_id)
+            .all()
+        )
+        return [
+            {
+                "file_path": c.file_path,
+                "line_number": c.line_number,
+                "issue_type": c.issue_type,
+                "severity": c.severity,
+                "comment_body": c.comment_body,
+            }
+            for c in comments
+        ]
+    finally:
+        session.close()
+
 
 # ── Query operations (for debugging and future dashboard) ─────────────────────
 

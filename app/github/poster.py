@@ -95,11 +95,11 @@ def build_review_summary(
     """
     total = len(all_comments)
 
-    if total == 0:
+    if total == 0 and not fallback_comments:
         return (
             "## CodeSentinel Review — No Issues Found\n\n"
             "Reviewed all changed files. No significant issues detected.\n\n"
-            "_This review was generated automatically by the PR Review Agent._"
+            "_This review was generated automatically by CodeSentinel._"
         )
 
     # Count by severity
@@ -115,7 +115,7 @@ def build_review_summary(
         type_counts[issue_type] = type_counts.get(issue_type, 0) + 1
 
     lines = [
-        "## 🤖 CodeSentinel Review Summary",
+        "## CodeSentinel Review Summary",
         "",
         f"Found **{total} issue(s)** across the changed files.",
         "",

@@ -56,17 +56,20 @@ def verify_webhook_signature(
 async def process_pr(
     repo_full_name: str,
     pr_number: int,
-    commit_sha: str
+    commit_sha: str,
+    installation_id: int,        # ← add this parameter
 ):
     from app.github.client import get_pr_context
-    from app.review.parser import parse_pr_files, build_file_context
+    from app.review.parser import parse_pr_files
     from app.review.reviewer import review_file
+    from app.github.poster import post_review
     from app.db.storage import (
         is_already_reviewed,
         create_review,
         update_review_status,
         save_comments_bulk,
         get_review_summary,
+        #get_comments_for_review,   # ← new helper, see below
     )
 
     if is_already_reviewed(commit_sha, repo_full_name):
@@ -83,40 +86,57 @@ async def process_pr(
     update_review_status(review_id, "processing")
 
     try:
-        context = get_pr_context(repo_full_name, pr_number)
-        parsed_files = parse_pr_files(context["files"])
+        context = get_pr_context(repo_full_name, pr_number, installation_id)
+        parsed_files_list = parse_pr_files(context["files"])
+
+        # Build a map of filename → ParsedFile for poster lookups
+        parsed_files_map = {pf.filename: pf for pf in parsed_files_list}
 
         print(f"\n  PR:    #{context['pr_number']} — {context['title']}")
         print(f"  Author: {context['author']}")
-        print(f"  Files to review: {len(parsed_files)}")
+        print(f"  Files to review: {len(parsed_files_list)}")
 
-        # ── LLM review ─────────────────────────────────────────────────
+        # ── LLM review ─────────────────────────────────────────────
         all_comments = []
-        
-        # Build a minimal pr_context dict for the prompt
         pr_context = {
             "title": context["title"],
             "description": context["description"],
             "author": context["author"],
         }
-        
-        # Match parsed files back to their full content
-        content_map = {f["filename"]: f.get("full_content", "") for f in context["files"]}
-        
-        for parsed_file in parsed_files:
+        content_map = {
+            f["filename"]: f.get("full_content", "")
+            for f in context["files"]
+        }
+
+        for parsed_file in parsed_files_list:
             full_content = content_map.get(parsed_file.filename, "")
             comments = review_file(parsed_file, full_content, pr_context)
             all_comments.extend(comments)
-        
-        # Save all comments to DB
+
         if all_comments:
             saved = save_comments_bulk(review_id, all_comments)
             print(f"\n  Saved {saved} comment(s) to database")
         else:
             print("\n  No issues found across all files")
-        # ── End LLM review ─────────────────────────────────────────────
+        # ── End LLM review ──────────────────────────────────────────
+
+        # ── Post review to GitHub ───────────────────────────────────
+        update_review_status(review_id, "posting")
+
+        print("\nPosting GitHub Review...")
+        print(f"Comments to post: {len(all_comments)}")
+
+        post_review(
+            repo=repo_full_name,
+            pr_number=pr_number,
+            commit_sha=commit_sha,
+            installation_id=installation_id,
+            all_comments=all_comments,
+            parsed_files=parsed_files_map,
+        )
 
         update_review_status(review_id, "completed")
+        # ── End post ────────────────────────────────────────────────
 
         summary = get_review_summary(review_id)
         print(f"\n  Review #{review_id} complete: {summary}")
@@ -188,11 +208,14 @@ async def handle_webhook(
             f"({commit_sha[:8]}...) in {repo_name}"
         )
 
+        installation_id = payload.get("installation", {}).get("id")
+
         background_tasks.add_task(
             process_pr,
             repo_name,
             pr_number,
-            commit_sha
+            commit_sha,
+            installation_id
         )
 
         return {"status": "processing"}
