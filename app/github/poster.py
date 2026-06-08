@@ -100,9 +100,9 @@ def build_review_summary(
 
     if total == 0 and not fallback_comments:
         return (
-            "## CodeSentinel Review — No Issues Found\n\n"
+            "## BracketWise Review — No Issues Found\n\n"
             "Reviewed all changed files. No significant issues detected.\n\n"
-            "_This review was generated automatically by CodeSentinel._"
+            "_This review was generated automatically by BracketWise._"
         )
 
     # Count by severity
@@ -118,7 +118,7 @@ def build_review_summary(
         type_counts[issue_type] = type_counts.get(issue_type, 0) + 1
 
     lines = [
-        "## CodeSentinel Review Summary",
+        "## BracketWise Review Summary",
         "",
         f"Found **{total} issue(s)** across the changed files.",
         "",
@@ -150,7 +150,7 @@ def build_review_summary(
             lines.append(fc["body"])
         lines.append("")
 
-    lines.append("_This review was generated automatically by the CodeSentinel._")
+    lines.append("_This review was generated automatically by the BracketWise._")
 
     return "\n".join(lines)
 
