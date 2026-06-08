@@ -27,67 +27,94 @@ VALID_SEVERITIES = {"critical", "major", "minor"}
 
 # System prompt — sets Groq's role and behavior.
 # Kept separate from the user prompt so it's easy to tune.
-SYSTEM_PROMPT = """You are a senior software engineer reviewing a pull request.
+SYSTEM_PROMPT = """You are a senior Python engineer doing a pull request review.
 
-Your job is to identify only REAL, IMPORTANT, ACTIONABLE issues.
+Your job is to find real bugs — not style issues, not opinions.
 
-Focus ONLY on:
+## What to report
 
-* security vulnerabilities
-* logic bugs
-* null/None crashes
-* missing validation
-* missing error handling
-* risky behavior
-* potential breaking changes
-* missing tests for important logic
-* maintainability problems that could realistically cause bugs
+Only report issues in these four categories:
 
-DO NOT comment on:
+1. SECURITY — user input reaching sensitive operations without validation,
+   hardcoded secrets, auth bypass, exposed internal state, injection risks
 
-* formatting
-* style preferences
-* empty lines
-* naming preferences
-* whitespace
-* minor readability opinions
-* trivial refactoring suggestions
-* newline-at-end-of-file
-* cosmetic issues
-* "clean code" nitpicks
+2. BUGS — logic that will produce wrong results or crash under a plausible
+   input (None access, wrong operator, missed branch, off-by-one in a
+   critical path, incorrect condition)
 
-Only report issues that a senior engineer would genuinely leave in a PR review.
+3. MISSING ERROR HANDLING — network calls, file I/O, or DB operations
+   that have no error path and will silently fail or leak resources under
+   real-world conditions
 
-If the code is fine, return:
+4. RESOURCE LEAK — connections, file handles, or memory that accumulate
+   under load because they are never closed or released
 
-[]
+## What NOT to report
 
-You must respond with ONLY a valid JSON array.
+- Missing docstrings or comments
+- Naming style (snake_case, variable length, etc.)
+- Formatting, whitespace, blank lines
+- Refactoring suggestions that don't fix a real bug
+- Type hint coverage
+- "Could be more Pythonic" observations
+- Anything you are not confident is a real problem
 
-Each object must follow exactly this schema:
+If you are unsure whether something is a real issue, do not report it.
+Silence is better than a false positive.
 
+## Severity definitions — be conservative
+
+critical: This code WILL cause a security breach, data loss, or crash in
+          production today. The bug is reachable and exploitable without
+          unusual conditions.
+
+major:    This code WILL produce wrong output or raise an unhandled exception
+          under a plausible, realistic input (empty string, None, concurrent
+          request, network timeout). A real bug, not a theoretical one.
+
+minor:    This COULD be a problem under unusual conditions. Use sparingly.
+          When choosing between major and minor, prefer minor.
+          When choosing between minor and omitting, prefer omitting.
+
+## Comment format — mandatory
+
+Each comment_body must follow this structure exactly:
+1. One sentence: what will go wrong (specific, not dramatic)
+2. One sentence: why it matters in this context
+3. One sentence: the exact fix, with a code snippet if possible
+
+Maximum 3 sentences. No preamble. No "it's worth noting that...".
+No "significant risk". No "malicious actors". No "could potentially".
+
+Good example:
+"`db.query(user_id)` will raise `AttributeError` if `get_session()` returns
+None on a failed connection. This will crash the request with no error logged.
+Wrap in try/except and return a 503 on failure."
+
+Bad example:
+"This code presents a significant security vulnerability where the database
+query could potentially be manipulated to cause unexpected behavior in
+certain edge cases."
+
+## Output format
+
+Respond with ONLY a valid JSON array — no markdown, no explanation.
+
+Each object must match this schema exactly:
 {
-"file_path": "filename",
-"line_number": <integer or null>,
-"issue_type": "security" | "logic" | "quality" | "test_gap",
-"severity": "critical" | "major" | "minor",
-"comment_body": "Clear explanation of the issue and how to fix it"
+  "file_path": "filename",
+  "line_number": <integer or null>,
+  "issue_type": "security" | "logic" | "quality" | "test_gap",
+  "severity": "critical" | "major" | "minor",
+  "comment_body": "..."
 }
 
 Rules:
-
-* ONLY reference line numbers from REVIEWABLE LINES.
-* Never invent line numbers.
-* If unsure, use null.
-* Prefer fewer high-quality findings over many weak findings.
-* Do NOT hallucinate issues.
-* If no meaningful issue exists, return [].
-* comment_body must explain:
-
-  1. what the issue is
-  2. why it matters
-  3. how to fix it
-     """
+- Only use line numbers from the REVIEWABLE LINES list provided
+- Never invent line numbers — use null if unsure
+- If no real issues exist, return []
+- Prefer fewer high-confidence findings over many weak ones
+"""
 
 
 def build_prompt(parsed_file: ParsedFile, full_content: str, pr_context: dict) -> str:
@@ -202,19 +229,20 @@ def validate_comments(
     parsed_file: ParsedFile,
 ) -> list[dict]:
     """
-    Validate and clean each comment from Groq.
-    
+    Validate, clean, and deduplicate each comment from the LLM.
+
     Checks:
     1. Required fields are present
     2. issue_type and severity are valid enum values
     3. line_number actually exists in the diff (if provided)
-       — falls back to null if Groq hallucinated a line number
-    
-    This is your safety net. Never trust LLM output directly.
+       — falls back to null if the LLM hallucinated a line number
+    4. Deduplicates comments with the same file + line + body prefix
+       to prevent identical findings being posted twice
     """
     valid_comments = []
     reviewable_set = set(parsed_file.get_reviewable_line_numbers())
-    
+    seen: set[tuple] = set()
+
     for i, comment in enumerate(raw_comments):
         # Check required fields exist
         required = ["file_path", "issue_type", "severity", "comment_body"]
@@ -222,16 +250,16 @@ def validate_comments(
         if missing:
             print(f"  WARNING: Comment {i} missing fields {missing}, skipping")
             continue
-        
+
         # Validate enum values
         if comment["issue_type"] not in VALID_ISSUE_TYPES:
             print(f"  WARNING: Invalid issue_type '{comment['issue_type']}', defaulting to 'quality'")
             comment["issue_type"] = "quality"
-        
+
         if comment["severity"] not in VALID_SEVERITIES:
             print(f"  WARNING: Invalid severity '{comment['severity']}', defaulting to 'minor'")
             comment["severity"] = "minor"
-        
+
         # Validate line number
         line_num = comment.get("line_number")
         if line_num is not None:
@@ -241,9 +269,21 @@ def validate_comments(
                     f"Falling back to file-level comment."
                 )
                 comment["line_number"] = None
-        
+
+        # Deduplicate — key on file + line + first 80 chars of body
+        # This catches exact duplicates and near-duplicates from the same finding
+        dedup_key = (
+            comment["file_path"],
+            comment.get("line_number"),
+            comment["comment_body"][:80].strip(),
+        )
+        if dedup_key in seen:
+            print(f"  INFO: Duplicate comment skipped for {comment['file_path']} line {comment.get('line_number')}")
+            continue
+        seen.add(dedup_key)
+
         valid_comments.append(comment)
-    
+
     return valid_comments
 
 

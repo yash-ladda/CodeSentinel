@@ -1,3 +1,4 @@
+from logging import exception
 from datetime import datetime
 from sqlalchemy.orm import Session, sessionmaker
 from app.db.models import Review, ReviewComment, engine
@@ -34,6 +35,9 @@ def is_already_reviewed(commit_sha: str, repo: str) -> bool:
             Review.status == "completed"
         ).first()
         return existing is not None
+    except Exception:
+        session.rollback()
+        raise
     finally:
         session.close()
 
@@ -65,6 +69,9 @@ def create_review(
         review_id = review.id
         print(f"  DB: Created review #{review_id} for PR #{pr_number}")
         return review_id
+    except Exception:
+        session.rollback()
+        raise
     finally:
         session.close()
 
@@ -89,6 +96,9 @@ def update_review_status(review_id: int, status: str, error_message: str = None)
 
         session.commit()
         print(f"  DB: Review #{review_id} status → {status}")
+    except Exception:
+        session.rollback()
+        raise
     finally:
         session.close()
 
@@ -123,6 +133,9 @@ def save_comment(
         session.commit()
         session.refresh(comment)
         return comment.id
+    except Exception:
+        session.rollback()
+        raise
     finally:
         session.close()
 
@@ -158,6 +171,9 @@ def save_comments_bulk(review_id: int, comments: list[dict]) -> int:
         session.commit()
         print(f"  DB: Saved {len(db_comments)} comment(s) for review #{review_id}")
         return len(db_comments)
+    except Exception:
+        session.rollback()
+        raise
     finally:
         session.close()
 
@@ -183,6 +199,9 @@ def get_comments_for_review(review_id: int) -> list[dict]:
             }
             for c in comments
         ]
+    except Exception:
+        session.rollback()
+        raise
     finally:
         session.close()
 
@@ -223,5 +242,8 @@ def get_review_summary(review_id: int) -> dict:
             "by_type": type_counts,
             "status": review.status,
         }
+    except Exception:
+        session.rollback()
+        raise
     finally:
         session.close()

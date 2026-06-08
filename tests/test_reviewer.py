@@ -167,6 +167,18 @@ class TestValidateComments:
         result = validate_comments(comments, parsed_file)
         assert len(result) == 1
         assert result[0]["line_number"] is None
+    
+    def test_duplicate_comments_are_deduplicated(self, parsed_file):
+        reviewable = parsed_file.get_reviewable_line_numbers()
+        comment = {
+            "file_path": "users.py",
+            "line_number": reviewable[0],
+            "issue_type": "security",
+            "severity": "critical",
+            "comment_body": "This is the same issue reported twice.",
+        }
+        result = validate_comments([comment, comment.copy()], parsed_file)
+        assert len(result) == 1
 
 
 class TestReviewFileIntegration:

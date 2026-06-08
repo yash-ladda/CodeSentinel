@@ -41,13 +41,20 @@ def build_review_comments(
         line_number = comment.get("line_number")
         body = comment["comment_body"]
 
-        # Prefix body with issue type and severity badge
         issue_type = comment.get("issue_type", "quality")
         severity = comment.get("severity", "minor")
-        formatted_body = f"**[{severity.upper()} | {issue_type}]** {body}"
+
+        # Use GitHub native callout syntax for high-severity issues.
+        # GitHub renders > [!CAUTION] and > [!WARNING] as colored alert boxes.
+        if severity == "critical":
+            formatted_body = f"> [!CAUTION]\n> **{issue_type.upper()}**\n\n{body}"
+        elif severity == "major":
+            formatted_body = f"> [!WARNING]\n> **{issue_type.upper()}**\n\n{body}"
+        else:
+            # minor — plain bold label, no callout box
+            formatted_body = f"**{issue_type.upper()}** — {body}"
 
         if line_number is None:
-            # File-level comment — no position, goes into summary
             fallback_comments.append({
                 "file_path": file_path,
                 "body": formatted_body,
@@ -56,16 +63,12 @@ def build_review_comments(
 
         parsed_file = parsed_files.get(file_path)
         if parsed_file is None:
-            # We have a comment for a file we didn't parse — shouldn't happen
-            # but guard against it
             print(f"  WARNING: No parsed file found for {file_path}, skipping inline comment")
             fallback_comments.append({"file_path": file_path, "body": formatted_body})
             continue
 
         position = parsed_file.get_position_for_line(line_number)
         if position is None:
-            # Line number didn't map to a diff position
-            # This can happen if the line is in full_content but not in the diff
             print(f"  WARNING: Line {line_number} in {file_path} has no diff position, falling back")
             fallback_comments.append({"file_path": file_path, "body": formatted_body})
             continue

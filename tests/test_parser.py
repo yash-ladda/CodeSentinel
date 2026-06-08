@@ -87,6 +87,22 @@ class TestParsePatch:
             # Content should NOT start with +
             assert not line.content.startswith("+")
 
+    def test_blank_line_in_source_preserves_line_numbers(self):
+        """Blank lines in source must not cause line number offset."""
+        from textwrap import dedent
+        patch = dedent("""\
+        @@ -1,5 +1,5 @@
+        def foo():
+        
+        +    x = 1
+            return x
+        """)
+        result = parse_patch(patch, "foo.py", "modified")
+        added = [l for l in result.lines if l.line_type == "added"]
+        assert len(added) == 1
+        # The added line is on line 2 in the new file (after def foo())
+        assert added[0].new_line_number == 2
+
     def test_empty_patch_returns_empty_lines(self):
         result = parse_patch("", "empty.py", "added")
         assert result.lines == []

@@ -75,14 +75,18 @@ class ParsedFile:
 def parse_patch(patch: str, filename: str, status: str) -> ParsedFile:
     """
     Parse a raw unified diff patch string into structured DiffLine objects.
-    
+
     Walk through the patch line by line:
     - Track position (increments for EVERY line including @@ headers)
     - Track new_line_number (only increments for + and context lines)
     - Track old_line_number (only increments for - and context lines)
-    
+
     The hunk header @@ -old_start,count +new_start,count @@ tells us
     where to start counting line numbers for each chunk.
+
+    Note: blank lines in the source file appear as a single space " " in
+    the diff. We must not skip them — they count as context lines and
+    must increment the position and line number counters correctly.
     """
     if not patch:
         return ParsedFile(filename=filename, status=status, lines=[])
@@ -93,18 +97,20 @@ def parse_patch(patch: str, filename: str, status: str) -> ParsedFile:
     old_line_num = 0
 
     for raw_line in patch.split("\n"):
-        if not raw_line:
+        # Only skip completely empty strings that appear at the very end
+        # of the patch after the final newline — not blank context lines.
+        # A blank context line in the source is represented as " " (one space)
+        # which becomes "" only if the diff generator strips trailing spaces.
+        # We treat a bare "" after we've started parsing as a blank context line.
+        if raw_line == "" and position == 0:
+            # Haven't started yet — skip leading empty lines
             continue
 
         if raw_line.startswith("@@"):
-            # Hunk header — counts as a position but has no file line number
             position += 1
 
-            # Parse starting line numbers from the @@ header
-            # Format: @@ -old_start,old_count +new_start,new_count @@
             match = re.search(r"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@", raw_line)
             if match:
-                # Subtract 1 because we increment BEFORE using the value below
                 old_line_num = int(match.group(1)) - 1
                 new_line_num = int(match.group(2)) - 1
 
@@ -119,7 +125,6 @@ def parse_patch(patch: str, filename: str, status: str) -> ParsedFile:
         elif raw_line.startswith("+"):
             position += 1
             new_line_num += 1
-            # Strip the leading + to get the actual code content
             lines.append(DiffLine(
                 line_type="added",
                 content=raw_line[1:],
@@ -131,7 +136,6 @@ def parse_patch(patch: str, filename: str, status: str) -> ParsedFile:
         elif raw_line.startswith("-"):
             position += 1
             old_line_num += 1
-            # Strip the leading - to get the actual code content
             lines.append(DiffLine(
                 line_type="removed",
                 content=raw_line[1:],
@@ -141,11 +145,19 @@ def parse_patch(patch: str, filename: str, status: str) -> ParsedFile:
             ))
 
         else:
-            # Context line — starts with a space (or rarely no prefix in some diffs)
+            # Context line — includes blank lines (raw_line == "" or raw_line == " ")
+            # Both represent a line that exists unchanged in the new file.
+            # We must count them to keep line numbers accurate.
+            if raw_line == "" and position > 0:
+                # Trailing empty string after final newline in the patch.
+                # This is not a real source line — skip it.
+                # We detect this because real blank context lines come as " "
+                # (space prefix), not "". Only trailing artifact lines are bare "".
+                continue
+
             position += 1
             new_line_num += 1
             old_line_num += 1
-            # Strip the leading space if present
             content = raw_line[1:] if raw_line.startswith(" ") else raw_line
             lines.append(DiffLine(
                 line_type="context",

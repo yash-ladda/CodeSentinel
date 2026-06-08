@@ -2,6 +2,7 @@ import json
 import hmac
 import hashlib
 import os
+import sys
 
 from fastapi import (
     FastAPI,
@@ -14,6 +15,22 @@ from dotenv import load_dotenv
 from app.db.models import create_tables
 
 load_dotenv()
+
+#STARTUP VALIDATION
+#Fail immediately with a clear message if required env vars are missing
+#Much better than a cryptic AttributeError or JWT failure mid-request
+_REQUIRED_ENV_VARS = [
+    "GITHUB_WEBHOOK_SECRET",
+    "GITHUB_APP_ID",
+    "GITHUB_PRIVATE_KEY_PATH",
+    "GROQ_API_KEY",
+]
+
+_missing = [var for var in _REQUIRED_ENV_VARS if not os.getenv(var)]
+if _missing:
+    print(f"ERROR: Missing required environment variables: {', '.join(_missing)}")
+    print("Check your .env file or Railway environment settings.")
+    sys.exit(1)
 
 GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET")
 

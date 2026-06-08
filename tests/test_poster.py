@@ -89,8 +89,9 @@ class TestBuildReviewComments:
             "comment_body": "Dangerous call",
         }]
         inline, _ = build_review_comments(comments, parsed_files_map)
-        assert "CRITICAL" in inline[0]["body"]
-        assert "security" in inline[0]["body"]
+        assert "SECURITY" in inline[0]["body"]
+        assert "Dangerous call" in inline[0]["body"]
+        assert "[!CAUTION]" in inline[0]["body"]
 
     def test_unknown_file_becomes_fallback(self, parsed_files_map):
         comments = [{
