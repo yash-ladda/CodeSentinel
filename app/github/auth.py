@@ -12,11 +12,27 @@ GITHUB_PRIVATE_KEY_PATH = os.getenv("GITHUB_PRIVATE_KEY_PATH")
 
 def load_private_key() -> str:
     """
-    Read the GitHub App private key (.pem) from disk.
-    """
-    with open(GITHUB_PRIVATE_KEY_PATH, "r") as f:
-        return f.read()
+    Load GitHub private key.
 
+    Priority:
+    1. GITHUB_PRIVATE_KEY (production)
+    2. GITHUB_PRIVATE_KEY_PATH (local)
+    """
+
+    # Production: key stored directly in env variable
+    inline_key = os.getenv("GITHUB_PRIVATE_KEY")
+    if inline_key:
+        return inline_key.replace("\\n", "\n")
+
+    # Local development: read .pem file
+    key_path = os.getenv("GITHUB_PRIVATE_KEY_PATH")
+    if key_path:
+        with open(key_path, "r") as f:
+            return f.read()
+
+    raise RuntimeError(
+        "GitHub private key not found."
+    )
 
 def generate_jwt() -> str:
     """

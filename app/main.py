@@ -225,7 +225,10 @@ async def handle_webhook(
             f"({commit_sha[:8]}...) in {repo_name}"
         )
 
-        installation_id = payload.get("installation", {}).get("id")
+        installation_id = (
+            payload.get("installation", {}).get("id")
+            or int(os.getenv("GITHUB_INSTALLATION_ID"))
+        )
 
         background_tasks.add_task(
             process_pr,
