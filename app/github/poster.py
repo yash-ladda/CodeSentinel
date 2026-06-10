@@ -204,7 +204,11 @@ def post_review(
     response = requests.post(url, json=payload, headers=headers)
 
     if response.status_code not in (200, 201):
-        print(f"  ERROR posting review: {response.status_code} {response.text[:300]}")
+        print("\n=== GITHUB REVIEW ERROR ===")
+        print("Status:", response.status_code)
+        print("Response:", response.text)
+        print("Payload:", payload)
+        print("===========================\n")
         response.raise_for_status()
 
     data = response.json()
