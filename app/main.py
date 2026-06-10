@@ -22,7 +22,6 @@ load_dotenv()
 _REQUIRED_ENV_VARS = [
     "GITHUB_WEBHOOK_SECRET",
     "GITHUB_APP_ID",
-    "GITHUB_PRIVATE_KEY_PATH",
     "GROQ_API_KEY",
 ]
 
@@ -31,6 +30,12 @@ if _missing:
     print(f"ERROR: Missing required environment variables: {', '.join(_missing)}")
     print("Check your .env file or Railway environment settings.")
     sys.exit(1)
+
+if not os.getenv("GITHUB_PRIVATE_KEY") and not os.getenv("GITHUB_PRIVATE_KEY_PATH"):
+    raise Exception(
+        "Missing GitHub private key. "
+        "Set GITHUB_PRIVATE_KEY or GITHUB_PRIVATE_KEY_PATH"
+    )
 
 GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET")
 
