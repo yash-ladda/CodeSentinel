@@ -12,26 +12,26 @@ GITHUB_PRIVATE_KEY_PATH = os.getenv("GITHUB_PRIVATE_KEY_PATH")
 
 def load_private_key() -> str:
     """
-    Load GitHub private key.
+    Load GitHub App private key.
 
     Priority:
-    1. GITHUB_PRIVATE_KEY (production)
-    2. GITHUB_PRIVATE_KEY_PATH (local)
+    1. GITHUB_PRIVATE_KEY env var (production/Railway)
+    2. GITHUB_PRIVATE_KEY_PATH file (local dev)
     """
+    private_key = os.getenv("GITHUB_PRIVATE_KEY")
 
-    # Production: key stored directly in env variable
-    inline_key = os.getenv("GITHUB_PRIVATE_KEY")
-    if inline_key:
-        return inline_key.replace("\\n", "\n")
+    if private_key:
+        return private_key.replace("\\n", "\n")
 
-    # Local development: read .pem file
     key_path = os.getenv("GITHUB_PRIVATE_KEY_PATH")
-    if key_path:
+
+    if key_path and os.path.exists(key_path):
         with open(key_path, "r") as f:
             return f.read()
 
-    raise RuntimeError(
-        "GitHub private key not found."
+    raise ValueError(
+        "Missing GitHub private key. "
+        "Set GITHUB_PRIVATE_KEY or GITHUB_PRIVATE_KEY_PATH"
     )
 
 def generate_jwt() -> str:
